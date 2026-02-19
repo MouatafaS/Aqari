@@ -1,26 +1,58 @@
 const express = require('express');
-const admin = require('firebase-admin');
 const cors = require('cors');
+const cron = require('node-cron');
 require('dotenv').config();
+
+// استدعاء ملف التهيئة الذي قمنا بإنشائه في الخطوة السابقة
+// تأكد أن الاسم يطابق اسم الملف الأول عندك
+const admin = require('./firebaseInit'); 
 
 const app = express();
 app.use(cors());
 app.use(express.json());
 
-// 1. تهيئة فايربيز أدمن بطريقة آمنة للرفع على السيرفر (Render)
-// لو السيرفر لقى المتغير في البيئة هيستخدمه، لو ملقاهوش (وأنت شغال محلي) هيستخدم الملف العادي
-let serviceAccount;
-if (process.env.FIREBASE_SERVICE_ACCOUNT) {
-  serviceAccount = JSON.parse(process.env.FIREBASE_SERVICE_ACCOUNT);
-} else {
-  serviceAccount = require("./serviceAccountKey.json");
-}
+/**
+ * 1. وظيفة فحص الإعلانات المنتهية 
+ * (تعمل تلقائياً كل يوم الساعة 12 منتصف الليل)
+ */
+cron.schedule('0 0 * * *', async () => {
+  console.log('⏳ جاري فحص الإعلانات المنتهية...');
+  
+  try {
+    const propertiesRef = admin.firestore().collection('properties');
+    const snapshot = await propertiesRef.where('status', '==', 'active').get();
 
-if (!admin.apps.length) {
-  admin.initializeApp({
-    credential: admin.credential.cert(serviceAccount)
-  });
-}
+    if (snapshot.empty) {
+      console.log('✅ لا توجد إعلانات نشطة لفحصها.');
+      return;
+    }
+
+    const batch = admin.firestore().batch();
+    const currentTime = Date.now();
+    let expiredCount = 0;
+
+    snapshot.forEach(doc => {
+      const data = doc.data();
+      
+      const expirySeconds = data.expiryDate?._seconds || data.expiryDate?.seconds; 
+
+      if (expirySeconds && (expirySeconds * 1000) < currentTime) {
+        batch.update(doc.ref, { status: 'expired' });
+        expiredCount++;
+      }
+    });
+
+    if (expiredCount > 0) {
+      await batch.commit();
+      console.log(`✅ تم تحديث ${expiredCount} إعلان إلى منتهي الصلاحية.`);
+    } else {
+      console.log('✅ لا توجد إعلانات انتهت صلاحيتها اليوم.');
+    }
+
+  } catch (error) {
+    console.error('❌ حدث خطأ أثناء التحديث التلقائي للإعلانات:', error);
+  }
+});
 
 /**
  * 2. Endpoint لإرسال إشعار لكل مستخدمي التطبيق مع إمكانية التوجيه لشاشة معينة
@@ -29,7 +61,6 @@ if (!admin.apps.length) {
 app.post('/send-to-all', async (req, res) => {
   const { title, body, targetScreen, propertyId } = req.body;
 
-  // التحقق من وجود البيانات الأساسية
   if (!title || !body) {
     return res.status(400).send({ error: "العنوان والمحتوى مطلوبين" });
   }
@@ -39,12 +70,11 @@ app.post('/send-to-all', async (req, res) => {
         title: title, 
         body: body 
     },
-    // 🔥 الجزء المسؤول عن توجيه المستخدم لشاشة معينة (Deep Linking) 🔥
     data: {
-      targetScreen: targetScreen || 'Home', // الشاشة المستهدفة
-      propertyId: propertyId || '',         // أي بيانات إضافية (مثل آيدي الإعلان)
+      targetScreen: targetScreen || 'Home',
+      propertyId: propertyId || '',
     },
-    topic: 'all_users', // الـ Topic اللي اشتركنا فيه في الـ React Native
+    topic: 'all_users',
   };
 
   try {
@@ -74,7 +104,7 @@ app.post('/send-to-user', async (req, res) => {
         targetScreen: targetScreen || 'Home',
         propertyId: propertyId || '',
       },
-      token: fcmToken, // الإرسال لتوكن معين بدلاً من Topic
+      token: fcmToken,
     };
   
     try {

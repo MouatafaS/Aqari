@@ -1,25 +1,23 @@
 const admin = require('firebase-admin');
-require('dotenv').config();
 
-// تهيئة فايربيز أدمن بطريقة آمنة للرفع على السيرفر (Koyeb)
-// لو السيرفر لقى المتغير في البيئة هيستخدمه، لو ملقاهوش (وأنت شغال محلي) هيستخدم الملف العادي
-let serviceAccount;
-if (process.env.FIREBASE_SERVICE_ACCOUNT) {
-  serviceAccount = JSON.parse(process.env.FIREBASE_SERVICE_ACCOUNT);
-} else {
-  serviceAccount = require("./serviceAccountKey.json");
-}
+// استدعاء ملف المفتاح الذي قمت بتحميله
+// تأكد أن الملف موجود في نفس المجلد أو قم بتغيير المسار
+const serviceAccount = require("./serviceAccountKey.json");
 
 /**
- * منع إعادة تهيئة التطبيق أكثر من مرة 
+ * منع إعادة تهيئة التطبيق (Initialization) أكثر من مرة 
+ * في بيئات التطوير مثل Node.js
  */
 if (!admin.apps.length) {
   admin.initializeApp({
-    credential: admin.credential.cert(serviceAccount)
+    credential: admin.credential.cert(serviceAccount),
+    // إذا كنت تستخدم قاعدة بيانات فايربيز أيضاً أضف الرابط هنا (اختياري)
+    // databaseURL: "https://your-project-id.firebaseio.com"
   });
 }
 
 /**
- * تصدير نسخة من الأدمن لاستخدامها في ملفات أخرى
+ * تصدير نسخة (Instance) من الأدمن لاستخدامها في ملفات أخرى
+ * مثل إرسال الإشعارات أو التحكم في المستخدمين
  */
 module.exports = admin;

@@ -5,7 +5,7 @@ require('dotenv').config();
 
 // استدعاء ملف التهيئة الذي قمنا بإنشائه في الخطوة السابقة
 // تأكد أن الاسم يطابق اسم الملف الأول عندك
-const admin = require('./firebaseInit'); 
+const admin = require('firebase-admin'); 
 
 const app = express();
 app.use(cors());

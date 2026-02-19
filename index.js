@@ -1,15 +1,15 @@
 const express = require('express');
 const admin = require('firebase-admin');
 const cors = require('cors');
-const cron = require('node-cron'); // ✅ 1. استدعاء مكتبة الجدولة اللي لسه مثبتها
+// إضافة مكتبة الجدولة
+const cron = require('node-cron');
 require('dotenv').config();
 
 const app = express();
 app.use(cors());
 app.use(express.json());
 
-// 1. تهيئة فايربيز أدمن بطريقة آمنة للرفع على السيرفر (Render)
-// لو السيرفر لقى المتغير في البيئة هيستخدمه، لو ملقاهوش (وأنت شغال محلي) هيستخدم الملف العادي
+// 1. تهيئة فايربيز أدمن بطريقة آمنة للرفع على السيرفر (Render/Koyeb)
 let serviceAccount;
 if (process.env.FIREBASE_SERVICE_ACCOUNT) {
   serviceAccount = JSON.parse(process.env.FIREBASE_SERVICE_ACCOUNT);
@@ -23,14 +23,16 @@ if (!admin.apps.length) {
   });
 }
 
-// =========================================================================
-// ✅ 2. الكود الجديد: فحص الإعلانات المنتهية (يشتغل تلقائياً كل يوم الساعة 12 منتصف الليل)
-// =========================================================================
+// ==================================================================
+// ✅ وظيفة الجدولة (Cron Job) لفحص الإعلانات المنتهية
+// تشتغل تلقائياً كل يوم الساعة 12:00 منتصف الليل بتوقيت السيرفر
+// ==================================================================
 cron.schedule('0 0 * * *', async () => {
   console.log('⏳ جاري فحص الإعلانات المنتهية...');
   
   try {
     const propertiesRef = admin.firestore().collection('properties');
+    // جلب الإعلانات النشطة فقط لتوفير القراءات
     const snapshot = await propertiesRef.where('status', '==', 'active').get();
 
     if (snapshot.empty) {
@@ -45,10 +47,12 @@ cron.schedule('0 0 * * *', async () => {
     snapshot.forEach(doc => {
       const data = doc.data();
       
-      // تأكد من اسم حقل تاريخ الانتهاء عندك في الفايربيز
+      // التحقق من تاريخ الانتهاء (تأكد أن اسم الحقل في الداتا بيز expiryDate)
+      // الحقل قد يكون Timestamp من فايربيز (يحتوي على seconds)
       const expirySeconds = data.expiryDate?._seconds || data.expiryDate?.seconds; 
 
       if (expirySeconds && (expirySeconds * 1000) < currentTime) {
+        // تحديث الحالة إلى expired
         batch.update(doc.ref, { status: 'expired' });
         expiredCount++;
       }
@@ -56,16 +60,16 @@ cron.schedule('0 0 * * *', async () => {
 
     if (expiredCount > 0) {
       await batch.commit();
-      console.log(`✅ تم تحديث ${expiredCount} إعلان إلى منتهي الصلاحية.`);
+      console.log(`✅ تم تحديث حالة ${expiredCount} إعلان إلى منتهي الصلاحية.`);
     } else {
-      console.log('✅ لا توجد إعلانات انتهت صلاحيتها اليوم.');
+      console.log('✅ لم تنتهِ صلاحية أي إعلانات اليوم.');
     }
 
   } catch (error) {
-    console.error('❌ حدث خطأ أثناء التحديث التلقائي للإعلانات:', error);
+    console.error('❌ حدث خطأ أثناء فحص الإعلانات المنتهية:', error);
   }
 });
-// =========================================================================
+// ==================================================================
 
 
 /**

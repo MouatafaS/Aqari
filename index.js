@@ -1,7 +1,6 @@
 const express = require('express');
 const admin = require('firebase-admin');
 const cors = require('cors');
-// إضافة مكتبة الجدولة
 const cron = require('node-cron');
 require('dotenv').config();
 
@@ -9,7 +8,7 @@ const app = express();
 app.use(cors());
 app.use(express.json());
 
-// 1. تهيئة فايربيز أدمن بطريقة آمنة للرفع على السيرفر (Render/Koyeb)
+// 1. تهيئة فايربيز
 let serviceAccount;
 if (process.env.FIREBASE_SERVICE_ACCOUNT) {
   serviceAccount = JSON.parse(process.env.FIREBASE_SERVICE_ACCOUNT);
@@ -24,119 +23,121 @@ if (!admin.apps.length) {
 }
 
 // ==================================================================
-// ✅ وظيفة الجدولة (Cron Job) لفحص الإعلانات المنتهية
-// تشتغل تلقائياً كل يوم الساعة 12:00 منتصف الليل بتوقيت السيرفر
+// ✅ وظيفة الجدولة المزدوجة (تحديث الحالة + الحذف النهائي)
+// 🔥 وضع التجربة: يعمل كل 3 ثواني
 // ==================================================================
-cron.schedule('0 0 * * *', async () => {
-  console.log('⏳ جاري فحص الإعلانات المنتهية...');
+cron.schedule('*/3 * * * * *', async () => {
+  const currentTime = Date.now();
+  const propertiesRef = admin.firestore().collection('properties');
   
+  // ------------------------------------------------------
+  // 1️⃣ المهمة الأولى: تحويل الإعلانات المنتهية إلى Expired
+  // ------------------------------------------------------
   try {
-    const propertiesRef = admin.firestore().collection('properties');
-    // جلب الإعلانات النشطة فقط لتوفير القراءات
-    const snapshot = await propertiesRef.where('status', '==', 'active').get();
+    const activeSnapshot = await propertiesRef.where('status', '==', 'active').get();
+    
+    if (!activeSnapshot.empty) {
+      const updateBatch = admin.firestore().batch();
+      let expiredCount = 0;
 
-    if (snapshot.empty) {
-      console.log('✅ لا توجد إعلانات نشطة لفحصها.');
-      return;
-    }
+      activeSnapshot.forEach(doc => {
+        const data = doc.data();
+        const expirySeconds = data.expiryDate?._seconds || data.expiryDate?.seconds; 
+        
+        // لو الوقت عدى --> حوله expired
+        if (expirySeconds && (expirySeconds * 1000) < currentTime) {
+          updateBatch.update(doc.ref, { status: 'expired' });
+          expiredCount++;
+        }
+      });
 
-    const batch = admin.firestore().batch();
-    const currentTime = Date.now();
-    let expiredCount = 0;
-
-    snapshot.forEach(doc => {
-      const data = doc.data();
-      
-      // التحقق من تاريخ الانتهاء (تأكد أن اسم الحقل في الداتا بيز expiryDate)
-      // الحقل قد يكون Timestamp من فايربيز (يحتوي على seconds)
-      const expirySeconds = data.expiryDate?._seconds || data.expiryDate?.seconds; 
-
-      if (expirySeconds && (expirySeconds * 1000) < currentTime) {
-        // تحديث الحالة إلى expired
-        batch.update(doc.ref, { status: 'expired' });
-        expiredCount++;
+      if (expiredCount > 0) {
+        await updateBatch.commit();
+        console.log(`🔄 تم تحويل ${expiredCount} إعلان إلى منتهي الصلاحية.`);
       }
-    });
-
-    if (expiredCount > 0) {
-      await batch.commit();
-      console.log(`✅ تم تحديث حالة ${expiredCount} إعلان إلى منتهي الصلاحية.`);
-    } else {
-      console.log('✅ لم تنتهِ صلاحية أي إعلانات اليوم.');
     }
-
   } catch (error) {
-    console.error('❌ حدث خطأ أثناء فحص الإعلانات المنتهية:', error);
+    console.error('❌ خطأ في تحديث الحالة:', error);
+  }
+
+  // ------------------------------------------------------
+  // 2️⃣ المهمة الثانية: حذف الإعلانات المنتهية منذ 3 أيام
+  // ------------------------------------------------------
+  try {
+    // حساب التوقيت: الوقت الحالي ناقص 3 أيام
+    const threeDaysInMs = 3 * 24 * 60 * 60 * 1000;
+    const deleteCutoff = currentTime - threeDaysInMs;
+
+    // بنجيب الإعلانات اللي حالتها expired
+    const expiredSnapshot = await propertiesRef.where('status', '==', 'expired').get();
+
+    if (!expiredSnapshot.empty) {
+      const deleteBatch = admin.firestore().batch();
+      let deletedCount = 0;
+
+      expiredSnapshot.forEach(doc => {
+        const data = doc.data();
+        const expirySeconds = data.expiryDate?._seconds || data.expiryDate?.seconds;
+        
+        // لو تاريخ الانتهاء كان من 3 أيام أو أكثر --> احذفه
+        if (expirySeconds && (expirySeconds * 1000) < deleteCutoff) {
+          deleteBatch.delete(doc.ref);
+          deletedCount++;
+        }
+      });
+
+      if (deletedCount > 0) {
+        await deleteBatch.commit();
+        console.log(`🗑️ تم حذف ${deletedCount} إعلان نهائياً لمرور 3 أيام على انتهائهم.`);
+      }
+    }
+  } catch (error) {
+    console.error('❌ خطأ في الحذف النهائي:', error);
   }
 });
 // ==================================================================
 
 
 /**
- * 2. Endpoint لإرسال إشعار لكل مستخدمي التطبيق مع إمكانية التوجيه لشاشة معينة
- * Body: { title, body, targetScreen, propertyId }
+ * Endpoints (الإشعارات) - كما هي بدون تغيير
  */
 app.post('/send-to-all', async (req, res) => {
   const { title, body, targetScreen, propertyId } = req.body;
-
-  // التحقق من وجود البيانات الأساسية
-  if (!title || !body) {
-    return res.status(400).send({ error: "العنوان والمحتوى مطلوبين" });
-  }
+  if (!title || !body) return res.status(400).send({ error: "Required fields missing" });
 
   const message = {
-    notification: { 
-        title: title, 
-        body: body 
-    },
-    // 🔥 الجزء المسؤول عن توجيه المستخدم لشاشة معينة (Deep Linking) 🔥
-    data: {
-      targetScreen: targetScreen || 'Home', // الشاشة المستهدفة
-      propertyId: propertyId || '',         // أي بيانات إضافية (مثل آيدي الإعلان)
-    },
-    topic: 'all_users', // الـ Topic اللي اشتركنا فيه في الـ React Native
+    notification: { title, body },
+    data: { targetScreen: targetScreen || 'Home', propertyId: propertyId || '' },
+    topic: 'all_users',
   };
 
   try {
     const response = await admin.messaging().send(message);
-    console.log('✅ تم إرسال الإشعار بنجاح:', response);
     res.status(200).send({ success: true, messageId: response });
   } catch (error) {
-    console.error('❌ خطأ في الإرسال:', error);
-    res.status(500).send({ error: "فشل إرسال الإشعار" });
+    res.status(500).send({ error: "Failed" });
   }
 });
 
-/**
- * 3. Endpoint إضافي لإرسال إشعار لمستخدم واحد فقط (Customer)
- * Body: { fcmToken, title, body, targetScreen, propertyId }
- */
 app.post('/send-to-user', async (req, res) => {
     const { fcmToken, title, body, targetScreen, propertyId } = req.body;
-  
-    if (!fcmToken || !title || !body) {
-      return res.status(400).send({ error: "التوكن والعنوان والمحتوى مطلوبين" });
-    }
+    if (!fcmToken || !title || !body) return res.status(400).send({ error: "Required fields missing" });
   
     const message = {
       notification: { title, body },
-      data: {
-        targetScreen: targetScreen || 'Home',
-        propertyId: propertyId || '',
-      },
-      token: fcmToken, // الإرسال لتوكن معين بدلاً من Topic
+      data: { targetScreen: targetScreen || 'Home', propertyId: propertyId || '' },
+      token: fcmToken,
     };
   
     try {
       const response = await admin.messaging().send(message);
       res.status(200).send({ success: true, messageId: response });
     } catch (error) {
-      res.status(500).send({ error: "فشل الإرسال لهذا المستخدم" });
+      res.status(500).send({ error: "Failed" });
     }
-  });
+});
 
-// 4. تشغيل السيرفر على جميع الواجهات للسماح للموبايل بالوصول عبر الـ IP
 const PORT = process.env.PORT || 3000;
 app.listen(PORT, '0.0.0.0', () => {
-  console.log(`🚀 السيرفر شغال دلوقتي ومتاح للأجهزة على بورت ${PORT}`);
+  console.log(`🚀 السيرفر شغال...`);
 });

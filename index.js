@@ -1,20 +1,31 @@
 const express = require('express');
+const admin = require('firebase-admin');
 const cors = require('cors');
-const cron = require('node-cron');
+const cron = require('node-cron'); // ✅ 1. استدعاء مكتبة الجدولة اللي لسه مثبتها
 require('dotenv').config();
-
-// استدعاء ملف التهيئة الذي قمنا بإنشائه في الخطوة السابقة
-// تأكد أن الاسم يطابق اسم الملف الأول عندك
-const admin = require('firebase-admin'); 
 
 const app = express();
 app.use(cors());
 app.use(express.json());
 
-/**
- * 1. وظيفة فحص الإعلانات المنتهية 
- * (تعمل تلقائياً كل يوم الساعة 12 منتصف الليل)
- */
+// 1. تهيئة فايربيز أدمن بطريقة آمنة للرفع على السيرفر (Render)
+// لو السيرفر لقى المتغير في البيئة هيستخدمه، لو ملقاهوش (وأنت شغال محلي) هيستخدم الملف العادي
+let serviceAccount;
+if (process.env.FIREBASE_SERVICE_ACCOUNT) {
+  serviceAccount = JSON.parse(process.env.FIREBASE_SERVICE_ACCOUNT);
+} else {
+  serviceAccount = require("./serviceAccountKey.json");
+}
+
+if (!admin.apps.length) {
+  admin.initializeApp({
+    credential: admin.credential.cert(serviceAccount)
+  });
+}
+
+// =========================================================================
+// ✅ 2. الكود الجديد: فحص الإعلانات المنتهية (يشتغل تلقائياً كل يوم الساعة 12 منتصف الليل)
+// =========================================================================
 cron.schedule('0 0 * * *', async () => {
   console.log('⏳ جاري فحص الإعلانات المنتهية...');
   
@@ -34,6 +45,7 @@ cron.schedule('0 0 * * *', async () => {
     snapshot.forEach(doc => {
       const data = doc.data();
       
+      // تأكد من اسم حقل تاريخ الانتهاء عندك في الفايربيز
       const expirySeconds = data.expiryDate?._seconds || data.expiryDate?.seconds; 
 
       if (expirySeconds && (expirySeconds * 1000) < currentTime) {
@@ -53,6 +65,8 @@ cron.schedule('0 0 * * *', async () => {
     console.error('❌ حدث خطأ أثناء التحديث التلقائي للإعلانات:', error);
   }
 });
+// =========================================================================
+
 
 /**
  * 2. Endpoint لإرسال إشعار لكل مستخدمي التطبيق مع إمكانية التوجيه لشاشة معينة
@@ -61,6 +75,7 @@ cron.schedule('0 0 * * *', async () => {
 app.post('/send-to-all', async (req, res) => {
   const { title, body, targetScreen, propertyId } = req.body;
 
+  // التحقق من وجود البيانات الأساسية
   if (!title || !body) {
     return res.status(400).send({ error: "العنوان والمحتوى مطلوبين" });
   }
@@ -70,11 +85,12 @@ app.post('/send-to-all', async (req, res) => {
         title: title, 
         body: body 
     },
+    // 🔥 الجزء المسؤول عن توجيه المستخدم لشاشة معينة (Deep Linking) 🔥
     data: {
-      targetScreen: targetScreen || 'Home',
-      propertyId: propertyId || '',
+      targetScreen: targetScreen || 'Home', // الشاشة المستهدفة
+      propertyId: propertyId || '',         // أي بيانات إضافية (مثل آيدي الإعلان)
     },
-    topic: 'all_users',
+    topic: 'all_users', // الـ Topic اللي اشتركنا فيه في الـ React Native
   };
 
   try {
@@ -104,7 +120,7 @@ app.post('/send-to-user', async (req, res) => {
         targetScreen: targetScreen || 'Home',
         propertyId: propertyId || '',
       },
-      token: fcmToken,
+      token: fcmToken, // الإرسال لتوكن معين بدلاً من Topic
     };
   
     try {

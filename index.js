@@ -26,7 +26,7 @@ if (!admin.apps.length) {
 // ✅ وظيفة الجدولة المزدوجة (تحديث الحالة + الحذف النهائي)
 // 🔥 وضع التجربة: يعمل كل 3 ثواني
 // ==================================================================
-cron.schedule('*/3 * * * * *', async () => {
+cron.schedule('0 */2 * * *', async () => {
   const currentTime = Date.now();
   const propertiesRef = admin.firestore().collection('properties');
   
